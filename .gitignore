@@ -2,3 +2,8 @@ openneuro/**
 afni/__*
 afni/*vr_motion*
 *.tar
+
+*.pyc
+fMRI-MAE/output/**
+
+fMRI-MAE/tmp/**
