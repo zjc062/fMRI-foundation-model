@@ -4,16 +4,16 @@
 
 ## TODO list
 
-- [ ] Test out the gpu memory usage, decide batch size for one gpu.
-- [ ] Test out the cpu memory usage for each dataloader worker, decide the data_buffer_size.
-- [ ] Currently using float16 for input data. Some overflow encountered when converting. Need some type of normalization.
-- [ ] Some data augmentations is very slow. Currently all data augmentations are disabled. Need to test those.
-- [ ] We can start with tiny model and data_size as large as possible. Later we will need to decide number of training epochs and data_size based on some scaling law. (NLP scaling law may not apply here. ) 
+- [ ] Test out the gpu memory usage, and decide the batch size for one gpu.
+- [ ] Test out the cpu memory usage for each dataloader worker, and decide the data_buffer_size.
+- [ ] Currently using float16 for input data. Some overflow was encountered when converting. Need some normalization.
+- [ ] Some data augmentations are very slow. Currently, all data augmentations are disabled. Need to test those.
+- [ ] We can start with the small model and data_size as large as possible. Later we will need to decide the number of training epochs and data_size based on some scaling law. (NLP scaling law may not apply here. ) 
 - [ ] Transfer to VideoMAEV2 or other MAE pipelines.
 - [ ] Tune hyperparameters.
 - [ ] (Optional) Convert to [mup](https://github.com/microsoft/mup) when we start to train larger models.
 
-## additional packages for Installation
+## Additional packages for Installation
 
 - pip install boto3 datasets transformers nibabel
 
