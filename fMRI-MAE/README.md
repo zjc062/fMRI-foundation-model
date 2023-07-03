@@ -4,9 +4,10 @@
 
 ## TODO list
 
-- [ ] Test out the gpu memory usage, and decide the batch size for one gpu.
+- [x] Test out the gpu memory usage, and decide the batch size for one gpu. *256 for small model*
+- [ ] Bottleneck of data processing is downloading (multiple workers is useless), need to switch to webdataset for large scale training
 - [ ] Test out the cpu memory usage for each dataloader worker, and decide the data_buffer_size.
-- [ ] Currently using float16 for input data. Some overflow was encountered when converting. Need some normalization.
+- [x] Currently using float16 for input data. Some overflow was encountered when converting. Need some normalization.
 - [ ] Some data augmentations are very slow. Currently, all data augmentations are disabled. Need to test those.
 - [ ] We can start with the small model and data_size as large as possible. Later we will need to decide the number of training epochs and data_size based on some scaling law. (NLP scaling law may not apply here. ) 
 - [ ] Transfer to VideoMAEV2 or other MAE pipelines.

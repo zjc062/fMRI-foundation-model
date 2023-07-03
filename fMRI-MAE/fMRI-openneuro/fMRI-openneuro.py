@@ -6,6 +6,8 @@ import datasets
 
 import boto3
 
+from scipy import ndimage
+
 
 _DESCRIPTION = """\
 fMIR dataset from openneuro.org
@@ -25,6 +27,7 @@ class fMRIConfig(datasets.BuilderConfig):
         self.num_datasets = num_datasets
         self.num_frames = num_frames
         self.sampling_rate = sampling_rate
+        self.shape = (65, 78, 65)
 
 class fMRITest(datasets.GeneratorBasedBuilder):
     """TODO: Short description of my dataset."""
@@ -54,7 +57,7 @@ class fMRITest(datasets.GeneratorBasedBuilder):
         if self.config.name == "test1":  # This is the name of the configuration selected in BUILDER_CONFIGS above
             # features = datasets.Features(
             #     {
-            #         # "func": np.ndarray(shape=(65,77,65,self.config.duration)),
+            #         # "func": np.ndarray(shape=(65,78,65,self.config.duration)),
             #         "func": datasets.Array4D(shape=(None,None,None,self.config.duration), dtype='float32'),
             #     }
             # )
@@ -125,6 +128,8 @@ class fMRITest(datasets.GeneratorBasedBuilder):
         
         duration = self.config.num_frames * self.config.sampling_rate
 
+        counter = 0
+
         for folder_name in folder_names:
             response = s3.list_objects_v2(Bucket=bucket_name, Prefix=folder_name)
             for obj in response.get('Contents', []):
@@ -142,13 +147,23 @@ class fMRITest(datasets.GeneratorBasedBuilder):
                     func_subj = obj_key.split('/')[1]
                     if func_subj == anat_subj:
                         s3.download_file(bucket_name, obj_key, func_file)
-                        func = nib.load(func_file).get_fdata().astype('float16')
+                        func = nib.load(func_file).get_fdata()
+                        func = func / np.mean(np.abs(func))
                         func = np.transpose(func, (3, 0, 1, 2)) # T, X, Y, Z
+                        t, x, y, z = func.shape
+                        rx, ry, rz = self.config.shape[0] / x, self.config.shape[1] / y, self.config.shape[2] / z
+                        rmin, rmax = min(rx, ry, rz), max(rx, ry, rz)
+                        if rmax < 0.95:
+                            func = ndimage.zoom(func, (1, rmax, rmax, rmax), order=1)
+                        elif rmin > 1.05:
+                            func = ndimage.zoom(func, (1, rmin, rmin, rmin), order=1)
+                        func = func.astype('float16')
                         shape = func.shape
-                        # print(f"{obj_key}", shape)
+                        print(counter, f"{obj_key}", shape)
                         for i in range(0, shape[0] - duration + self.config.sampling_rate, duration):
                             func_slice = func[i:i+duration:self.config.sampling_rate, :, :, :]
                             # print(f"{obj_key}-{i}", func_slice.shape)
+                            counter += 1
                             yield f"{obj_key}-{i}", {
                                 "func": func_slice,
                             }
