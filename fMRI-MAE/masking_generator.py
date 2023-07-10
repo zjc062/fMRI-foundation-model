@@ -1,11 +1,12 @@
 import numpy as np
+import torch
 
 class TubeMaskingGenerator:
     def __init__(self, input_size, mask_ratio, max_num_patches):
         self.mask_ratio = mask_ratio
         self.max_num_patches = max_num_patches
         self.frames, self.x, self.y, self.z = input_size
-        self.num_patches_per_frame =  max_num_patches
+        self.num_patches_per_frame =  max_num_patches // self.frames
         self.total_patches = self.frames * self.num_patches_per_frame 
         self.num_masks_per_frame = int(mask_ratio * self.num_patches_per_frame)
         self.total_masks = self.frames * self.num_masks_per_frame
@@ -27,8 +28,8 @@ class TubeMaskingGenerator:
         np.random.shuffle(mask_per_frame)
         mask_per_frame = np.hstack([
             mask_per_frame,
-            np.zeros(self.num_patches_per_frame - num_patches_per_frame),
+            np.zeros(self.num_patches_per_frame - self.num_masks_per_frame - (num_patches_per_frame - num_masks_per_frame)),
             np.ones(self.num_masks_per_frame - num_masks_per_frame),
         ])
         mask = np.tile(mask_per_frame, (frames,1)).flatten()
-        return mask 
+        return torch.tensor(mask)

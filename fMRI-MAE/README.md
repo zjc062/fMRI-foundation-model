@@ -4,8 +4,8 @@
 
 ## TODO list
 
-- [x] Test out the gpu memory usage, and decide the batch size for one gpu. *256 for small model*
-- [ ] Bottleneck of data processing is downloading (multiple workers is useless), need to switch to webdataset for large scale training
+- [x] Test out the gpu memory usage, and decide the batch size for one gpu. *200 for small model* 
+- [x] Bottleneck of data processing is downloading (multiple workers is useless), need to switch to webdataset for large scale training
 - [ ] Test out the cpu memory usage for each dataloader worker, and decide the data_buffer_size.
 - [x] Currently using float16 for input data. Some overflow was encountered when converting. Need some normalization.
 - [ ] Some data augmentations are very slow. Currently, all data augmentations are disabled. Need to test those.

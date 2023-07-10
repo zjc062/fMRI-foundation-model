@@ -6,7 +6,7 @@ OMP_NUM_THREADS=1 python -m torch.distributed.launch --use-env --nproc_per_node=
         --mask_ratio 0.9 \
         --model pretrain_fmrimae_small_patch13 \
         --decoder_depth 4 \
-        --batch_size 256 \
+        --batch_size 200 \
         --data_buffer_size 256 \
         --opt adamw \
         --opt_betas 0.9 0.95 \

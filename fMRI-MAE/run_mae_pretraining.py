@@ -91,7 +91,7 @@ def get_args():
                         help='seed for shuffling the datasets')
     parser.add_argument('--data_buffer_size', default=100, type=int,
                         help='buffer size for shuffling the datasets')
-    parser.add_argument('--data_batch_per_epoch', default=32000, type=int,
+    parser.add_argument('--data_batch_per_epoch', default=1000, type=int,
                         help='number of batches for each epoch of webdatset')
     parser.add_argument('--max_num_patches', default=196*4, type=int, 
                         help='max number of patches for each fmri func')
@@ -160,7 +160,7 @@ def main(args):
     model = get_model(args)
     patch_size = model.encoder.patch_embed.patch_size
     print("Patch size = %s" % str(patch_size))
-    # args.window_size = (args.num_frames // args.tubelet_size, args.input_size[0] // patch_size[0], args.input_size[1] // patch_size[1], args.input_size[2] // patch_size[2])
+    args.window_size = (args.num_frames // args.tubelet_size, args.input_size[0] // patch_size[0], args.input_size[1] // patch_size[1], args.input_size[2] // patch_size[2])
     args.patch_size = patch_size
 
     # get dataset

@@ -22,14 +22,19 @@ __all__ = [
     'pretrain_fmrimae_huge_patch13',
 ]
 
-def get_pos_embed(pos_embed, token_shape, max_shape=(4, 10, 10, 10)):
+def get_pos_embed(pos_embed, x, token_shape, max_shape=(4, 10, 10, 10)):
     embeding = []
     embed_dim = pos_embed.shape[-1]
     reshaped_pos_embed = pos_embed.reshape(*max_shape, -1)
     for shape in token_shape:
         start = [(L - l) // 2 for l, L in zip(shape, max_shape)]
         end = [s + l for s, l in zip(start, shape)]
-        embeding.append(reshaped_pos_embed[start[0]:end[0], start[1]:end[1], start[2]:end[2], start[3]:end[3]].reshape(-1, embed_dim))
+        embed = reshaped_pos_embed[start[0]:end[0], start[1]:end[1], start[2]:end[2], start[3]:end[3]].reshape(-1, embed_dim)
+        embed = torch.cat([
+            embed, 
+            torch.zeros((x.shape[1] - embed.shape[0], embed_dim), device=embed.device, dtype=embed.dtype)
+        ])
+        embeding.append(embed)
     return torch.stack(embeding)
 
 # borrowed from huggingface
@@ -125,7 +130,7 @@ class PretrainVisionTransformerEncoder(nn.Module):
         B, _, C = x.shape
         x = self.patch_embed(x)
         
-        x = x + get_pos_embed(self.pos_embed, token_shape, self.max_patch_shape).type_as(x).to(x.device).clone().detach()
+        x = x + get_pos_embed(self.pos_embed, x, token_shape, self.max_patch_shape).type_as(x).to(x.device).clone().detach()
 
         B, _, C = x.shape
         x_vis = x[~mask].reshape(B, -1, C) # ~mask means visible
@@ -142,8 +147,8 @@ class PretrainVisionTransformerEncoder(nn.Module):
         x_vis = self.norm(x_vis)
         return x_vis
 
-    def forward(self, x, mask, attn_mask):
-        x = self.forward_features(x, mask, attn_mask)
+    def forward(self, x, mask, token_shape, attn_mask):
+        x = self.forward_features(x, mask, token_shape, attn_mask)
         x = self.head(x)
         return x
 
@@ -314,12 +319,13 @@ class PretrainVisionTransformer(nn.Module):
         return {'pos_embed', 'cls_token', 'mask_token'}
 
     def forward(self, x, mask, token_shape, attn_mask=None):
-        B, N, C = x.shape
+        # B, N, C = x.shape
         x_vis = self.encoder(x, mask, token_shape, attn_mask) # [B, N_vis, C_e]
         x_vis = self.encoder_to_decoder(x_vis) # [B, N_vis, C_d]
+        B, N, C = x_vis.shape
         # we don't unshuffle the correct visible token order, 
         # but shuffle the pos embedding accorddingly.
-        expand_pos_embed = get_pos_embed(self.pos_embed, token_shape, self.max_patch_shape).type_as(x).to(x.device).clone().detach()
+        expand_pos_embed = get_pos_embed(self.pos_embed, x, token_shape, self.max_patch_shape).type_as(x).to(x.device).clone().detach()
         pos_emd_vis = expand_pos_embed[~mask].reshape(B, -1, C)
         pos_emd_mask = expand_pos_embed[mask].reshape(B, -1, C)
         x_full = torch.cat([x_vis + pos_emd_vis, self.mask_token + pos_emd_mask], dim=1) # [B, N, C_d]
