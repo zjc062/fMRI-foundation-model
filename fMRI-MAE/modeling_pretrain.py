@@ -22,6 +22,42 @@ __all__ = [
     'pretrain_fmrimae_huge_patch13',
 ]
 
+def get_pos_embed(pos_embed, token_shape, max_shape=(4, 10, 10, 10)):
+    embeding = []
+    embed_dim = pos_embed.shape[-1]
+    reshaped_pos_embed = pos_embed.reshape(*max_shape, -1)
+    for shape in token_shape:
+        start = [(L - l) // 2 for l, L in zip(shape, max_shape)]
+        end = [s + l for s, l in zip(start, shape)]
+        embeding.append(reshaped_pos_embed[start[0]:end[0], start[1]:end[1], start[2]:end[2], start[3]:end[3]].reshape(-1, embed_dim))
+    return torch.stack(embeding)
+
+# borrowed from huggingface
+def invert_attention_mask(encoder_attention_mask: torch.Tensor, dtype=None) -> torch.Tensor:
+    """
+    Invert an attention mask (e.g., switches 0. and 1.).
+
+    Args:
+        encoder_attention_mask (`torch.Tensor`): An attention mask.
+
+    Returns:
+        `torch.Tensor`: The inverted attention mask.
+    """
+    if encoder_attention_mask.dim() == 3:
+        encoder_extended_attention_mask = encoder_attention_mask[:, None, :, :]
+    if encoder_attention_mask.dim() == 2:
+        encoder_extended_attention_mask = encoder_attention_mask[:, None, None, :]
+    # T5 has a mask that can compare sequence ids, we can simulate this here with this transposition
+    # Cf. https://github.com/tensorflow/mesh/blob/8d2465e9bc93129b913b5ccc6a59aa97abd96ec6/mesh_tensorflow
+    # /transformer/transformer_layers.py#L270
+    # encoder_extended_attention_mask = (encoder_extended_attention_mask ==
+    # encoder_extended_attention_mask.transpose(-1, -2))
+    if dtype is not None:
+        encoder_extended_attention_mask = encoder_extended_attention_mask.to(dtype=dtype)  # fp16 compatibility
+    encoder_extended_attention_mask = (1.0 - encoder_extended_attention_mask) * torch.finfo(encoder_extended_attention_mask.dtype).min
+
+    return encoder_extended_attention_mask
+
 
 class PretrainVisionTransformerEncoder(nn.Module):
     """ Vision Transformer with support for patch or hybrid CNN input stage
@@ -29,16 +65,16 @@ class PretrainVisionTransformerEncoder(nn.Module):
     def __init__(self, img_size=(65, 78, 65), patch_size=13, num_classes=0, embed_dim=768, depth=12,
                  num_heads=12, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop_rate=0., attn_drop_rate=0.,
                  drop_path_rate=0., norm_layer=nn.LayerNorm, init_values=None, num_frames=8, tubelet_size=2, use_checkpoint=False,
-                 use_learnable_pos_emb=False):
+                 use_learnable_pos_emb=False, max_patch_shape=(4, 10, 10, 10)):
         super().__init__()
         self.num_classes = num_classes
         self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
         self.patch_embed = PatchEmbed(
             img_size=img_size, patch_size=patch_size, embed_dim=embed_dim, num_frames=num_frames, tubelet_size=tubelet_size)
-        num_patches = self.patch_embed.num_patches
         self.use_checkpoint = use_checkpoint
 
-
+        self.max_patch_shape = max_patch_shape
+        num_patches = max_patch_shape[0] * max_patch_shape[1] * max_patch_shape[2] * max_patch_shape[3]
         # TODO: Add the cls token
         if use_learnable_pos_emb:
             self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, embed_dim))
@@ -85,27 +121,29 @@ class PretrainVisionTransformerEncoder(nn.Module):
         self.num_classes = num_classes
         self.head = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
-    def forward_features(self, x, mask):
-        _, _, T, _, _ = x.shape
+    def forward_features(self, x, mask, token_shape, attn_mask=None):
+        B, _, C = x.shape
         x = self.patch_embed(x)
         
-        x = x + self.pos_embed.type_as(x).to(x.device).clone().detach()
+        x = x + get_pos_embed(self.pos_embed, token_shape, self.max_patch_shape).type_as(x).to(x.device).clone().detach()
 
         B, _, C = x.shape
         x_vis = x[~mask].reshape(B, -1, C) # ~mask means visible
+        attn_mask = attn_mask[~mask].reshape(B, -1) 
+        attn_mask = invert_attention_mask(attn_mask, dtype=x.dtype)
 
         if self.use_checkpoint:
             for blk in self.blocks:
-                x_vis = checkpoint.checkpoint(blk, x_vis)
+                x_vis = checkpoint.checkpoint(blk, x_vis, attn_mask)
         else:   
             for blk in self.blocks:
-                x_vis = blk(x_vis)
+                x_vis = blk(x_vis, attn_mask)
 
         x_vis = self.norm(x_vis)
         return x_vis
 
-    def forward(self, x, mask):
-        x = self.forward_features(x, mask)
+    def forward(self, x, mask, attn_mask):
+        x = self.forward_features(x, mask, attn_mask)
         x = self.head(x)
         return x
 
@@ -160,20 +198,23 @@ class PretrainVisionTransformerDecoder(nn.Module):
         self.num_classes = num_classes
         self.head = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
-    def forward(self, x, return_token_num):
+    def forward(self, x, attn_mask, return_token_num):
+        return_zero_token_mask = attn_mask
+        attn_mask = invert_attention_mask(attn_mask, dtype=x.dtype)
         if self.use_checkpoint:
             for blk in self.blocks:
-                x = checkpoint.checkpoint(blk, x)
+                x = checkpoint.checkpoint(blk, x, attn_mask)
         else:   
             for blk in self.blocks:
-                x = blk(x)
+                x = blk(x, attn_mask)
 
         if return_token_num > 0:
             x = self.head(self.norm(x[:, -return_token_num:])) # only return the mask tokens predict pixels
+            return_zero_token_mask = return_zero_token_mask[:, -return_token_num:]
         else:
             x = self.head(self.norm(x))
 
-        return x
+        return x * return_zero_token_mask.unsqueeze(-1)
 
 class PretrainVisionTransformer(nn.Module):
     """ Vision Transformer with support for patch or hybrid CNN input stage
@@ -203,6 +244,7 @@ class PretrainVisionTransformer(nn.Module):
                  tubelet_size=2,
                  num_classes=0, # avoid the error from create_fn in timm
                  in_chans=0, # avoid the error from create_fn in timm
+                 max_patch_shape=(4, 10, 10, 10),
                  ):
         super().__init__()
         self.encoder = PretrainVisionTransformerEncoder(
@@ -223,7 +265,8 @@ class PretrainVisionTransformer(nn.Module):
             num_frames=num_frames,
             tubelet_size=tubelet_size,
             use_checkpoint=use_checkpoint,
-            use_learnable_pos_emb=use_learnable_pos_emb)
+            use_learnable_pos_emb=use_learnable_pos_emb,
+            max_patch_shape=max_patch_shape)
 
         self.decoder = PretrainVisionTransformerDecoder(
             patch_size=patch_size, 
@@ -247,7 +290,9 @@ class PretrainVisionTransformer(nn.Module):
 
         self.mask_token = nn.Parameter(torch.zeros(1, 1, decoder_embed_dim))
 
-        self.pos_embed = get_sinusoid_encoding_table(self.encoder.patch_embed.num_patches, decoder_embed_dim)
+        self.max_patch_shape = max_patch_shape
+        num_patches = max_patch_shape[0] * max_patch_shape[1] * max_patch_shape[2] * max_patch_shape[3]
+        self.pos_embed = get_sinusoid_encoding_table(num_patches, decoder_embed_dim)
 
         trunc_normal_(self.mask_token, std=.02)
 
@@ -268,18 +313,20 @@ class PretrainVisionTransformer(nn.Module):
     def no_weight_decay(self):
         return {'pos_embed', 'cls_token', 'mask_token'}
 
-    def forward(self, x, mask):
-        _, _, T, _, _ = x.shape
-        x_vis = self.encoder(x, mask) # [B, N_vis, C_e]
+    def forward(self, x, mask, token_shape, attn_mask=None):
+        B, N, C = x.shape
+        x_vis = self.encoder(x, mask, token_shape, attn_mask) # [B, N_vis, C_e]
         x_vis = self.encoder_to_decoder(x_vis) # [B, N_vis, C_d]
-        B, N, C = x_vis.shape
         # we don't unshuffle the correct visible token order, 
         # but shuffle the pos embedding accorddingly.
-        expand_pos_embed = self.pos_embed.expand(B, -1, -1).type_as(x).to(x.device).clone().detach()
+        expand_pos_embed = get_pos_embed(self.pos_embed, token_shape, self.max_patch_shape).type_as(x).to(x.device).clone().detach()
         pos_emd_vis = expand_pos_embed[~mask].reshape(B, -1, C)
         pos_emd_mask = expand_pos_embed[mask].reshape(B, -1, C)
         x_full = torch.cat([x_vis + pos_emd_vis, self.mask_token + pos_emd_mask], dim=1) # [B, N, C_d]
-        x = self.decoder(x_full, pos_emd_mask.shape[1]) # [B, N_mask, 2 * 13 * 13 * 13]
+        attn_mask_vis = attn_mask[~mask].reshape(B, -1)
+        attn_mask_mask = attn_mask[mask].reshape(B, -1)
+        attn_mask_full = torch.cat([attn_mask_vis, attn_mask_mask], dim=1)
+        x = self.decoder(x_full, attn_mask_full, pos_emd_mask.shape[1]) # [B, N_mask, 2 * 13 * 13 * 13]
 
         return x
 

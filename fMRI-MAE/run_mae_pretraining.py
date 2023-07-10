@@ -83,14 +83,18 @@ def get_args():
                         help='Training interpolation (random, bilinear, bicubic default: "bicubic")')
 
     # Dataset parameters
-    parser.add_argument('--data_ndatasets', default=400, type=int, 
-                        help='number of datasets for each split (train, val, test), need to be divisable by world_size * num_workers') # val test is 0 for now
+    parser.add_argument('--data_urls', default='/scratch/openneuro-0-100-ps13-f8-r1-bspline-shuffled-old/func-{000000..000577}.tar', type=str, 
+                        help='path to the dataset')
+    parser.add_argument('--data_location', default='file', type=str, choices=['file', 'aws'], help='where the dataset stored')
+    parser.add_argument('--data_resample', default=True, type=bool, help='whether to resample the dataset')
     parser.add_argument('--data_seed', default=42, type=int, 
                         help='seed for shuffling the datasets')
     parser.add_argument('--data_buffer_size', default=100, type=int,
                         help='buffer size for shuffling the datasets')
-    parser.add_argument('--data_size', default=32000, type=int,
-                        help='number of samples for the dataset, should be divisable by batch_size * world_size')
+    parser.add_argument('--data_batch_per_epoch', default=32000, type=int,
+                        help='number of batches for each epoch of webdatset')
+    parser.add_argument('--max_num_patches', default=196*4, type=int, 
+                        help='max number of patches for each fmri func')
     parser.add_argument('--num_frames', type=int, default= 8)
     parser.add_argument('--tubelet_size', type=int, default= 2)
     parser.add_argument('--sampling_rate', type=int, default= 1)
@@ -156,30 +160,18 @@ def main(args):
     model = get_model(args)
     patch_size = model.encoder.patch_embed.patch_size
     print("Patch size = %s" % str(patch_size))
-    args.window_size = (args.num_frames // args.tubelet_size, args.input_size[0] // patch_size[0], args.input_size[1] // patch_size[1], args.input_size[2] // patch_size[2])
+    # args.window_size = (args.num_frames // args.tubelet_size, args.input_size[0] // patch_size[0], args.input_size[1] // patch_size[1], args.input_size[2] // patch_size[2])
     args.patch_size = patch_size
 
     # get dataset
     dataset_train = build_pretraining_dataset(args)
-    dataset_train = dataset_train.shuffle(args.data_seed, buffer_size=args.data_buffer_size)
-
 
     num_tasks = utils.get_world_size()
     global_rank = utils.get_rank()
 
 
-    dataset_train = datasets.distributed.split_dataset_by_node(dataset_train, global_rank, num_tasks)
-    len_dataset_train = args.data_size
-    dataset_train = dataset_train.take(len_dataset_train)
-
     total_batch_size = args.batch_size * num_tasks
-    num_training_steps_per_epoch = len_dataset_train // total_batch_size
-
-    # sampler_train = torch.utils.data.DistributedSampler(
-    #     dataset_train, num_replicas=num_tasks, rank=sampler_rank, shuffle=True
-    # )
-    # print("Sampler_train = %s" % str(sampler_train))
-
+    num_training_steps_per_epoch = args.data_batch_per_epoch
 
     if global_rank == 0 and args.log_dir is not None:
         os.makedirs(args.log_dir, exist_ok=True)
@@ -187,14 +179,7 @@ def main(args):
     else:
         log_writer = None
 
-    data_loader_train = torch.utils.data.DataLoader(
-        dataset_train, 
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        # pin_memory=args.pin_mem,
-        # drop_last=True,
-        # worker_init_fn=utils.seed_worker
-    )
+    data_loader_train = dataset_train
     len_data_loader_train = num_training_steps_per_epoch
 
     model.to(device)
@@ -238,8 +223,6 @@ def main(args):
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
     for epoch in range(args.start_epoch, args.epochs):
-        if args.distributed:
-            dataset_train.set_epoch(epoch)
         if log_writer is not None:
             log_writer.set_step(epoch * num_training_steps_per_epoch)
         train_stats = train_one_epoch(

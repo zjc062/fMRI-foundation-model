@@ -77,7 +77,7 @@ class Attention(nn.Module):
         self.proj = nn.Linear(all_head_dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-    def forward(self, x):
+    def forward(self, x, mask=None):
         B, N, C = x.shape
         qkv_bias = None
         if self.q_bias is not None:
@@ -89,6 +89,9 @@ class Attention(nn.Module):
 
         q = q * self.scale
         attn = (q @ k.transpose(-2, -1))
+
+        if mask is not None:
+            attn = attn + mask
 
         
         attn = attn.softmax(dim=-1)
@@ -122,12 +125,12 @@ class Block(nn.Module):
         else:
             self.gamma_1, self.gamma_2 = None, None
 
-    def forward(self, x):
+    def forward(self, x, mask=None):
         if self.gamma_1 is None:
-            x = x + self.drop_path(self.attn(self.norm1(x)))
+            x = x + self.drop_path(self.attn(self.norm1(x), mask))
             x = x + self.drop_path(self.mlp(self.norm2(x)))
         else:
-            x = x + self.drop_path(self.gamma_1 * self.attn(self.norm1(x)))
+            x = x + self.drop_path(self.gamma_1 * self.attn(self.norm1(x), mask))
             x = x + self.drop_path(self.gamma_2 * self.mlp(self.norm2(x)))
         return x
 
@@ -145,17 +148,19 @@ class PatchEmbed(nn.Module):
         self.patch_size = patch_size
         self.num_patches = num_patches
         self.tubelet_size = tubelet_size
-        self.proj = nn.Conv3d(in_channels=tubelet_size, out_channels=embed_dim, 
-                            kernel_size = (patch_size[0], patch_size[1], patch_size[2]), 
-                            stride=(patch_size[0], patch_size[1], patch_size[2]))
+        # self.proj = nn.Conv3d(in_channels=tubelet_size, out_channels=embed_dim, 
+        #                     kernel_size = (patch_size[0], patch_size[1], patch_size[2]), 
+        #                     stride=(patch_size[0], patch_size[1], patch_size[2]))
+        self.proj = nn.Linear(self.tubelet_size * patch_size[0] * patch_size[1] * patch_size[2], embed_dim)
 
     def forward(self, x, **kwargs):
-        B, T, X, Y, Z = x.shape
-        # FIXME look at relaxing size constraints
-        assert X == self.img_size[0] and Y == self.img_size[1] and Z == self.img_size[2], \
-            f"Input image size ({X}*{Y}*{Z}) doesn't match model ({self.img_size[0]}*{self.img_size[1]}*{self.img_size[2]})."
-        x = self.proj(x.view(-1, self.tubelet_size, X, Y, Z))
-        x = rearrange(x, '(b t) c x y z -> b (t x y z) c', t = T // self.tubelet_size)
+        # B, T, X, Y, Z = x.shape
+        # # FIXME look at relaxing size constraints
+        # assert X == self.img_size[0] and Y == self.img_size[1] and Z == self.img_size[2], \
+        #     f"Input image size ({X}*{Y}*{Z}) doesn't match model ({self.img_size[0]}*{self.img_size[1]}*{self.img_size[2]})."
+        # x = self.proj(x.view(-1, self.tubelet_size, X, Y, Z))
+        # x = rearrange(x, '(b t) c x y z -> b (t x y z) c', t = T // self.tubelet_size)
+        x = self.proj(x)
         return x
     
 # sin-cos position encoding

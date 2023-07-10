@@ -29,9 +29,11 @@ def train_one_epoch(model: torch.nn.Module, data_loader: Iterable, len_data_load
                 if wd_schedule_values is not None and param_group["weight_decay"] > 0:
                     param_group["weight_decay"] = wd_schedule_values[it]
 
-        videos, bool_masked_pos = batch['func'], batch['mask']
+        videos, token_shape, attn_mask, bool_masked_pos = batch
         # print(videos.shape, bool_masked_pos.shape)
         videos = videos.to(device, non_blocking=True)
+        token_shape = token_shape.to(device, non_blocking=True)
+        attn_mask = attn_mask.to(device, non_blocking=True)
         bool_masked_pos = bool_masked_pos.to(device, non_blocking=True).flatten(1).to(torch.bool)
 
         with torch.no_grad():
@@ -42,20 +44,22 @@ def train_one_epoch(model: torch.nn.Module, data_loader: Iterable, len_data_load
             unnorm_videos = videos
 
             if normlize_target:
-                videos_squeeze = rearrange(unnorm_videos, 'b (t ts) (x p0) (y p1) (z p2) -> b (t x y z) (ts p0 p1 p2)', 
-                                           ts=tubelet_size, p0=patch_size[0], p1=patch_size[1], p2=patch_size[2])
+                videos_squeeze = unnorm_videos
+                # videos_squeeze = rearrange(unnorm_videos, 'b (t ts) (x p0) (y p1) (z p2) -> b (t x y z) (ts p0 p1 p2)', 
+                #                            ts=tubelet_size, p0=patch_size[0], p1=patch_size[1], p2=patch_size[2])
                 videos_patch = (videos_squeeze - videos_squeeze.mean(dim=-1, keepdim=True)
                     ) / (videos_squeeze.var(dim=-1, unbiased=True, keepdim=True).sqrt() + 1e-6)
                 # todo: check the std and mean
             else:
-                videos_patch = rearrange(unnorm_videos, 'b (t ts) (x p0) (y p1) (z p2) -> b (t x y z) (ts p0 p1 p2)', 
-                                         ts=tubelet_size, p0=patch_size[0], p1=patch_size[1], p2=patch_size[2])
+                videos_patch = unnorm_videos
+                # videos_patch = rearrange(unnorm_videos, 'b (t ts) (x p0) (y p1) (z p2) -> b (t x y z) (ts p0 p1 p2)', 
+                #                          ts=tubelet_size, p0=patch_size[0], p1=patch_size[1], p2=patch_size[2])
 
             B, _, C = videos_patch.shape
             labels = videos_patch[bool_masked_pos].reshape(B, -1, C)
 
         with torch.cuda.amp.autocast():
-            outputs = model(videos, bool_masked_pos)
+            outputs = model(videos, bool_masked_pos, token_shape, attn_mask)
             loss = loss_func(input=outputs, target=labels)
 
         loss_value = loss.item()
