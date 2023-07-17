@@ -33,9 +33,6 @@ class DataAugmentationForVideoMAE(object):
         # TODO: add augmentation for fMRI
         self.transform = transforms.Compose([
             tio.CropOrPad((65, 78, 65)),
-            tio.RandomMotion(),
-
-            
             # tio.RandomFlip(axes=('LR',)),
             # tio.RandomAffine(scales=(0.9, 1.1), degrees=10, isotropic=False, default_pad_value='otsu'),
             # tio.RandomAffine(scales=(0.9, 1.1)),
@@ -43,6 +40,15 @@ class DataAugmentationForVideoMAE(object):
             # tio.RandomBlur(std=(0, 0.1)),
             # tio.RandomBiasField(coefficients=(0, 0.1)),
             ])
+        # self.mri_augment = args.mri_augment
+        self.mri_augment = True
+        self.augment = transforms.Compose([
+            tio.RandomMotion(p=0.2),  # Motion correction invariant
+            # tio.RandomGhosting(p=0.2),  # Slice timing correction augmentation
+            # tio.RandomFlip(axes=('LR', 'AP', 'SI'), flip_probability=0.2), # Flip augmentation
+            # tio.RandomAffine(scales=(0, 1.2), degrees=(10, 10), isotropic=False, default_pad_value='otsu'), # Registration invariant
+            # tio.RandomNoise(std=(0, 0.1), p=0.2), # Smoothing invariant
+            ]) 
         self.patchify = Patchify(args.patch_size, args.tubelet_size, args.max_num_patches)
         if args.mask_type == 'tube':
             self.masked_position_generator = TubeMaskingGenerator(
@@ -52,6 +58,10 @@ class DataAugmentationForVideoMAE(object):
     def __call__(self, sample):
         key, func = sample
         process_data = self.transform(func)
+        # import pdb; pdb.set_trace()
+        if self.mri_augment:
+            process_data_32 = process_data.astype(np.float32)
+            process_data = self.augment(process_data_32)
         paded, mask, token_shape = self.patchify(process_data)
         # print(process_data.shape)
         return paded, token_shape, mask, self.masked_position_generator(token_shape)
@@ -59,6 +69,7 @@ class DataAugmentationForVideoMAE(object):
     def __repr__(self):
         repr = "(DataAugmentationForVideoMAE,\n"
         repr += "  transform = %s,\n" % str(self.transform)
+        repr += "  mri_augment = %s,\n" % str(self.mri_augment)
         repr += "  Masked position generator = %s,\n" % str(self.masked_position_generator)
         repr += ")"
         return repr
