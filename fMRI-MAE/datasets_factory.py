@@ -33,6 +33,9 @@ class DataAugmentationForVideoMAE(object):
         # TODO: add augmentation for fMRI
         self.transform = transforms.Compose([
             tio.CropOrPad((65, 78, 65)),
+            tio.RandomMotion(),
+
+            
             # tio.RandomFlip(axes=('LR',)),
             # tio.RandomAffine(scales=(0.9, 1.1), degrees=10, isotropic=False, default_pad_value='otsu'),
             # tio.RandomAffine(scales=(0.9, 1.1)),
