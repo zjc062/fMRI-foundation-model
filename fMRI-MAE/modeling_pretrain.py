@@ -102,7 +102,6 @@ class PretrainVisionTransformerEncoder(nn.Module):
 
         self.apply(self._init_weights)
 
-
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
             nn.init.xavier_uniform_(m.weight)

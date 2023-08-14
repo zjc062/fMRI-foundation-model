@@ -13,7 +13,7 @@ from timm.models.registry import register_model
 from timm.models.layers import to_3tuple
 
 
-from .modeling_finetune import (
+from modeling_finetune import (
     Block,
     PatchEmbed,
     _cfg,
@@ -25,10 +25,10 @@ def trunc_normal_(tensor, mean=0., std=1.):
     __call_trunc_normal_(tensor, mean=mean, std=std, a=-std, b=std)
 
 __all__ = [
-    'pretrain_fmrimae_small_patch13',
-    'pretrain_fmrimae_base_patch13', 
-    'pretrain_fmrimae_large_patch13', 
-    'pretrain_fmrimae_huge_patch13',
+    'pretrain_fmrimae_v2_small_patch13',
+    'pretrain_fmrimae_v2_base_patch13', 
+    'pretrain_fmrimae_v2_large_patch13', 
+    'pretrain_fmrimae_v2_huge_patch13',
 ]
 
 # from Dingli's code
@@ -80,7 +80,6 @@ class PretrainVisionTransformerEncoder(nn.Module):
     def __init__(self,
                  img_size=(65, 78, 65),
                  patch_size=13,
-                #  in_chans=3,
                  num_classes=0,
                  embed_dim=768,
                  depth=12,
@@ -96,9 +95,9 @@ class PretrainVisionTransformerEncoder(nn.Module):
                  num_frames=8, # from dingli's code
                  tubelet_size=2,
                  use_learnable_pos_emb=False,
-                 with_cp=False,
+                 use_checkpoint=False,
                 #  all_frames=16,
-                 cos_attn=False,
+                #  cos_attn=False,
                  max_patch_shape=(4, 10, 10, 10)):
         super().__init__()
         self.num_classes = num_classes
@@ -110,9 +109,10 @@ class PretrainVisionTransformerEncoder(nn.Module):
             embed_dim=embed_dim,
             num_frames=num_frames,
             tubelet_size=tubelet_size)
-        num_patches = self.patch_embed.num_patches
-        self.with_cp = with_cp
+        self.use_checkpoint = use_checkpoint
         self.max_patch_shape = max_patch_shape
+        num_patches = max_patch_shape[0] * max_patch_shape[1] * max_patch_shape[2] * max_patch_shape[3]
+
         if use_learnable_pos_emb:
             self.pos_embed = nn.Parameter(
                 torch.zeros(1, num_patches + 1, embed_dim))
@@ -135,7 +135,8 @@ class PretrainVisionTransformerEncoder(nn.Module):
                 drop_path=dpr[i],
                 norm_layer=norm_layer,
                 init_values=init_values,
-                cos_attn=cos_attn) for i in range(depth)
+                # cos_attn=cos_attn,
+                ) for i in range(depth)
         ])
         self.norm = norm_layer(embed_dim)
         self.head = nn.Linear(
@@ -170,12 +171,12 @@ class PretrainVisionTransformerEncoder(nn.Module):
         self.head = nn.Linear(
             self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
-    def forward_features(self, x, mask):
+    def forward_features(self, x, mask, token_shape, attn_mask=None):
         x = self.patch_embed(x)
 
         # x = x + self.pos_embed.type_as(x).to(x.device).clone().detach()
         # adopt from dingli's code
-        x = x + get_pos_embed(self.pos_embed, x, self.patch_embed.patch_shape, self.max_patch_shape).type_as(x).to(x.device).clone().detach()
+        x = x + get_pos_embed(self.pos_embed, x, token_shape, self.max_patch_shape).type_as(x).to(x.device).clone().detach()
 
         B, _, C = x.shape
         x_vis = x[~mask].reshape(B, -1, C)  # ~mask means visible
@@ -183,7 +184,7 @@ class PretrainVisionTransformerEncoder(nn.Module):
         attn_mask = invert_attention_mask(attn_mask, dtype=x.dtype)
 
         for blk in self.blocks:
-            if self.with_cp:
+            if self.use_checkpoint:
                 x_vis = cp.checkpoint(blk, x_vis)
             else:
                 x_vis = blk(x_vis)
@@ -191,8 +192,8 @@ class PretrainVisionTransformerEncoder(nn.Module):
         x_vis = self.norm(x_vis)
         return x_vis
 
-    def forward(self, x, mask):
-        x = self.forward_features(x, mask)
+    def forward(self, x, mask, token_shape, attn_mask):
+        x = self.forward_features(x, mask, token_shape, attn_mask)
         x = self.head(x)
         return x
 
@@ -217,16 +218,16 @@ class PretrainVisionTransformerDecoder(nn.Module):
                  init_values=None,
                  num_patches=600,
                  tubelet_size=2,
-                 with_cp=False,
-                 cos_attn=False):
+                 use_checkpoint=False,
+                #  cos_attn=False,
+                 ):
         super().__init__()
         self.num_classes = num_classes
         self.patch_size = to_3tuple(patch_size)
         assert num_classes == tubelet_size * self.patch_size[0] * self.patch_size[1] * self.patch_size[2]
         # num_features for consistency with other models
         self.num_features = self.embed_dim = embed_dim
-        self.patch_size = patch_size
-        self.with_cp = with_cp
+        self.use_checkpoint = use_checkpoint
 
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)
                ]  # stochastic depth decay rule
@@ -242,7 +243,8 @@ class PretrainVisionTransformerDecoder(nn.Module):
                 drop_path=dpr[i],
                 norm_layer=norm_layer,
                 init_values=init_values,
-                cos_attn=cos_attn) for i in range(depth)
+                # cos_attn=cos_attn
+                ) for i in range(depth)
         ])
         self.norm = norm_layer(embed_dim)
         self.head = nn.Linear(
@@ -274,20 +276,23 @@ class PretrainVisionTransformerDecoder(nn.Module):
         self.head = nn.Linear(
             self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
-    def forward(self, x, return_token_num):
+    def forward(self, x, attn_mask, return_token_num):
+        return_zero_token_mask = attn_mask
+        attn_mask = invert_attention_mask(attn_mask, dtype=x.dtype)
         for blk in self.blocks:
-            if self.with_cp:
-                x = cp.checkpoint(blk, x)
+            if self.use_checkpoint:
+                x = cp.checkpoint(blk, x, attn_mask)
             else:
-                x = blk(x)
+                x = blk(x, attn_mask)
 
         if return_token_num > 0:
             # only return the mask tokens predict pixels
             x = self.head(self.norm(x[:, -return_token_num:]))
+            return_zero_token_mask = return_zero_token_mask[:, -return_token_num:]
         else:
             # [B, N, 3*16^2]
             x = self.head(self.norm(x))
-        return x
+        return x * return_zero_token_mask.unsqueeze(-1)
 
 
 class PretrainVisionTransformer(nn.Module):
@@ -319,9 +324,10 @@ class PretrainVisionTransformer(nn.Module):
         tubelet_size=2,
         num_classes=0,  # avoid the error from create_fn in timm
         in_chans=0,  # avoid the error from create_fn in timm
-        with_cp=False,
-        all_frames=16,
-        cos_attn=False,
+        use_checkpoint=False,
+        max_patch_shape=(4, 10, 10, 10),
+        num_frames=8,
+        # cos_attn=False,
     ):
         super().__init__()
         self.encoder = PretrainVisionTransformerEncoder(
@@ -340,11 +346,14 @@ class PretrainVisionTransformer(nn.Module):
             drop_path_rate=drop_path_rate,
             norm_layer=norm_layer,
             init_values=init_values,
+            num_frames=num_frames,
             tubelet_size=tubelet_size,
             use_learnable_pos_emb=use_learnable_pos_emb,
-            with_cp=with_cp,
-            all_frames=all_frames,
-            cos_attn=cos_attn)
+            use_checkpoint=use_checkpoint,
+            # all_frames=all_frames,
+            # cos_attn=cos_attn,
+            max_patch_shape=max_patch_shape,
+            )
 
         self.decoder = PretrainVisionTransformerDecoder(
             patch_size=patch_size,
@@ -362,16 +371,19 @@ class PretrainVisionTransformer(nn.Module):
             norm_layer=norm_layer,
             init_values=init_values,
             tubelet_size=tubelet_size,
-            with_cp=with_cp,
-            cos_attn=cos_attn)
+            use_checkpoint=use_checkpoint,
+            # cos_attn=cos_attn,
+            )
 
         self.encoder_to_decoder = nn.Linear(
             encoder_embed_dim, decoder_embed_dim, bias=False)
 
         self.mask_token = nn.Parameter(torch.zeros(1, 1, decoder_embed_dim))
 
-        self.pos_embed = get_sinusoid_encoding_table(
-            self.encoder.patch_embed.num_patches, decoder_embed_dim)
+        self.max_patch_shape = max_patch_shape
+        num_patches = max_patch_shape[0] * max_patch_shape[1] * max_patch_shape[2] * max_patch_shape[3]
+
+        self.pos_embed = get_sinusoid_encoding_table(num_patches, decoder_embed_dim)
 
         trunc_normal_(self.mask_token, std=.02)
 
@@ -395,7 +407,8 @@ class PretrainVisionTransformer(nn.Module):
         # TODO: Test this part
         decode_vis = mask if decode_mask is None else ~decode_mask
 
-        x_vis = self.encoder(x, mask)  # [B, N_vis, C_e]
+        # test this part
+        x_vis = self.encoder(x, mask, token_shape, attn_mask)  # [B, N_vis, C_e]
         x_vis = self.encoder_to_decoder(x_vis)  # [B, N_vis, C_d]
         B, N_vis, C = x_vis.shape
 
@@ -422,7 +435,7 @@ class PretrainVisionTransformer(nn.Module):
         return x
 
 @register_model
-def pretrain_fmrimae_small_patch13(pretrained=False, **kwargs):
+def pretrain_fmrimae_v2_small_patch13(pretrained=False, **kwargs):
     model = PretrainVisionTransformer(
         img_size=(65, 78, 65),
         patch_size=13,
@@ -446,7 +459,7 @@ def pretrain_fmrimae_small_patch13(pretrained=False, **kwargs):
     return model
 
 @register_model
-def pretrain_fmrimae_base_patch13(pretrained=False, **kwargs):
+def pretrain_fmrimae_v2_base_patch13(pretrained=False, **kwargs):
     model = PretrainVisionTransformer(
         img_size=(65, 78, 65),
         patch_size=13, 
@@ -470,7 +483,7 @@ def pretrain_fmrimae_base_patch13(pretrained=False, **kwargs):
     return model
  
 @register_model
-def pretrain_fmrimae_large_patch13(pretrained=False, **kwargs):
+def pretrain_fmrimae_v2_large_patch13(pretrained=False, **kwargs):
     model = PretrainVisionTransformer(
         img_size=(65, 78, 65),
         patch_size=13, 
@@ -494,7 +507,7 @@ def pretrain_fmrimae_large_patch13(pretrained=False, **kwargs):
     return model
 
 @register_model
-def pretrain_fmrimae_huge_patch13(pretrained=False, **kwargs):
+def pretrain_fmrimae_v2_huge_patch13(pretrained=False, **kwargs):
     model = PretrainVisionTransformer(
         img_size=(65, 78, 65),
         patch_size=13, 

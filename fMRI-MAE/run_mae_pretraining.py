@@ -14,6 +14,7 @@ from engine_for_pretraining import train_one_epoch
 from utils import NativeScalerWithGradNormCount as NativeScaler
 import utils
 import modeling_pretrain
+import modeling_pretrain_V2
 import datasets.distributed
 
 

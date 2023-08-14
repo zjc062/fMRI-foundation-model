@@ -41,7 +41,7 @@ class DataAugmentationForVideoMAE(object):
             # tio.RandomBiasField(coefficients=(0, 0.1)),
             ])
         # self.mri_augment = args.mri_augment
-        self.mri_augment = True
+        self.mri_augment = False
         self.augment = transforms.Compose([
             tio.RandomMotion(p=0.2),  # Motion correction invariant
             # tio.RandomGhosting(p=0.2),  # Slice timing correction augmentation
